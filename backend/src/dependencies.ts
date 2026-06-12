@@ -11,7 +11,7 @@ export type DependencyHealth = {
   redis: DependencyStatus;
 };
 
-const postgres = new Pool({ connectionString: config.databaseUrl });
+export const postgres = new Pool({ connectionString: config.databaseUrl });
 const redis = createClient({ url: config.redisUrl });
 
 redis.on("error", (error) => {

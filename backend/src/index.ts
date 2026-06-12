@@ -1,8 +1,10 @@
 import { app } from "./app";
 import { config } from "./config";
-import { startDependencies, stopDependencies } from "./dependencies";
+import { postgres, startDependencies, stopDependencies } from "./dependencies";
+import { runMigrations } from "./database/migrations";
 
 await startDependencies();
+await runMigrations(postgres);
 
 const server = app.listen(config.port, () => {
   console.log(`Server listening on port ${config.port}`);
