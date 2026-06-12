@@ -1,24 +1,66 @@
+x-backend-environment: &backend-environment
+  DATABASE_URL: postgres://shortly:shortly@postgres:5432/shortly
+  REDIS_URL: redis://redis:6379
+  SHORT_URL_BASE_URL: http://localhost:5000
+
+x-backend-health: &backend-health
+  interval: 5s
+  timeout: 3s
+  retries: 10
+  start_period: 5s
+
 services:
-  api:
-    build: .
-    environment:
-      PORT: 5000
-      DATABASE_URL: postgres://shortly:shortly@postgres:5432/shortly
-      REDIS_URL: redis://redis:6379
-      SHORT_URL_BASE_URL: http://localhost:5000
+  gateway:
+    image: nginx:1.27-alpine
     ports:
       - "5000:5000"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      postgres:
+      creation:
         condition: service_healthy
-      redis:
+      redirect:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "bun", "-e", "const r=await fetch('http://localhost:5000/health');process.exit(r.ok?0:1)"]
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:5000/health"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 5s
+
+  creation:
+    build: .
+    command: ["bun", "run", "start:creation"]
+    environment:
+      <<: *backend-environment
+      PORT: 5001
+    expose:
+      - "5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      <<: *backend-health
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://localhost:5001/health');process.exit(r.ok?0:1)"]
+
+  redirect:
+    build: .
+    command: ["bun", "run", "start:redirect"]
+    environment:
+      <<: *backend-environment
+      REDIRECT_PORT: 5002
+    expose:
+      - "5002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      <<: *backend-health
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://localhost:5002/health');process.exit(r.ok?0:1)"]
 
   postgres:
     image: postgres:17-alpine
@@ -26,8 +68,6 @@ services:
       POSTGRES_DB: shortly
       POSTGRES_USER: shortly
       POSTGRES_PASSWORD: shortly
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -38,8 +78,6 @@ services:
 
   redis:
     image: redis:8-alpine
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:

@@ -1,7 +1,10 @@
 import express from "express";
 
 import { config } from "./config";
-import { checkDependencies } from "./dependencies";
+import {
+  checkDependencies,
+  type DependencyHealthCheck,
+} from "./dependencies";
 import {
   createShortCode,
   createShortUrl,
@@ -12,6 +15,10 @@ import {
   invalidUrlError,
   isValidOriginalUrl,
 } from "./urls/validate-original-url";
+import {
+  redisRedirectCache,
+  type PositiveRedirectCache,
+} from "./urls/redirect-cache";
 
 const shortCodeGenerationFailedError = {
   error: {
@@ -29,6 +36,8 @@ const internalServerError = {
 
 export const createApp = (
   codeSource: ShortCodeSource = createShortCode,
+  redirectCache: PositiveRedirectCache = redisRedirectCache,
+  healthCheck: DependencyHealthCheck = checkDependencies,
 ): express.Express => {
   const app = express();
 
@@ -39,8 +48,8 @@ export const createApp = (
   });
 
   app.get("/health", async (_request, response) => {
-    const health = await checkDependencies();
-    response.status(health.status === "ok" ? 200 : 503).json(health);
+    const health = await healthCheck();
+    response.status(health.status === "error" ? 503 : 200).json(health);
   });
 
   app.post("/urls", async (request, response) => {
@@ -57,6 +66,16 @@ export const createApp = (
         config.shortUrlBaseUrl,
         codeSource,
       );
+
+      try {
+        await redirectCache.storeOriginalUrl(
+          result.shortUrl.code,
+          result.shortUrl.originalUrl,
+        );
+      } catch (error) {
+        console.error("Unable to warm redirect cache", error);
+      }
+
       response.status(result.created ? 201 : 200).json(result.shortUrl);
     } catch (error) {
       if (error instanceof ShortCodeGenerationError) {

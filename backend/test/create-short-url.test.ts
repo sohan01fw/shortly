@@ -6,7 +6,14 @@ process.env.REDIS_URL ??= "redis://localhost:6379";
 process.env.SHORT_URL_BASE_URL = "http://localhost:5000";
 
 const { app, createApp } = await import("../src/app");
-const { postgres } = await import("../src/dependencies");
+const { createRedirectApp } = await import("../src/redirect-app");
+const {
+  createDependencyLifecycle,
+  postgres,
+  redis,
+  startDependencies,
+  stopDependencies,
+} = await import("../src/dependencies");
 const { runMigrations } = await import("../src/database/migrations");
 
 let server: Server | undefined;
@@ -74,6 +81,7 @@ const expectInvalidUrl = async (body: unknown): Promise<void> => {
 };
 
 beforeAll(async () => {
+  await startDependencies();
   await runMigrations(postgres);
   const listening = await listen(app);
   server = listening.server;
@@ -81,17 +89,110 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await postgres.query("TRUNCATE urls RESTART IDENTITY");
+  await Promise.all([
+    postgres.query("TRUNCATE urls RESTART IDENTITY"),
+    redis.flushDb(),
+  ]);
 });
 
 afterAll(async () => {
   if (server) {
     await closeServer(server);
   }
-  await postgres.end();
+  await stopDependencies();
 });
 
 describe("POST /urls", () => {
+  test("warms the positive redirect cache after creation", async () => {
+    const created = await createUrl("https://example.com/warm-cache");
+
+    expect(created.response.status).toBe(201);
+    expect(await redis.get(`short-url:${created.body.code}`)).toBe(
+      created.body.originalUrl,
+    );
+
+    const ttl = await redis.ttl(`short-url:${created.body.code}`);
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(24 * 60 * 60);
+  });
+
+  test("refreshes the positive redirect cache when reusing a Short URL", async () => {
+    const originalUrl = "https://example.com/refresh-cache";
+    const first = await createUrl(originalUrl);
+    const cacheKey = `short-url:${first.body.code}`;
+    await redis.set(cacheKey, "https://example.com/stale", { EX: 1 });
+
+    const reused = await createUrl(originalUrl);
+
+    expect(reused.response.status).toBe(200);
+    expect(reused.body).toEqual(first.body);
+    expect(await redis.get(cacheKey)).toBe(first.body.originalUrl);
+    expect(await redis.ttl(cacheKey)).toBeGreaterThan(1);
+  });
+
+  test("creation succeeds when its best-effort cache write fails", async () => {
+    const cacheError = new Error("Redis write failed");
+    const failingCache = {
+      storeOriginalUrl: async (): Promise<void> => {
+        throw cacheError;
+      },
+    };
+    const creationServer = await listen(createApp(() => "CACHEER", failingCache));
+    const originalConsoleError = console.error;
+    const loggedErrors: unknown[][] = [];
+    console.error = (...args: unknown[]) => loggedErrors.push(args);
+
+    try {
+      const response = await postUrlTo(creationServer.baseUrl, {
+        url: "https://example.com/cache-error",
+      });
+
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({
+        code: "CACHEER",
+        shortUrl: "http://localhost:5000/CACHEER",
+        originalUrl: "https://example.com/cache-error",
+      });
+      expect(loggedErrors).toContainEqual([
+        "Unable to warm redirect cache",
+        cacheError,
+      ]);
+    } finally {
+      console.error = originalConsoleError;
+      await closeServer(creationServer.server);
+    }
+  });
+
+  test("creation replaces a negative sentinel and enables redirect", async () => {
+    const code = "NEWLINK";
+    const originalUrl = "https://example.com/replaced-sentinel";
+    await redis.set(`short-url:${code}`, "__SHORT_URL_NOT_FOUND__", { EX: 60 });
+    const creationServer = await listen(createApp(() => code));
+    const redirectServer = await listen(createRedirectApp());
+
+    try {
+      const creationResponse = await postUrlTo(creationServer.baseUrl, {
+        url: originalUrl,
+      });
+
+      expect(creationResponse.status).toBe(201);
+      expect(await redis.get(`short-url:${code}`)).toBe(originalUrl);
+
+      const redirectResponse = await fetch(
+        `${redirectServer.baseUrl}/${code}`,
+        { redirect: "manual" },
+      );
+
+      expect(redirectResponse.status).toBe(302);
+      expect(redirectResponse.headers.get("location")).toBe(originalUrl);
+    } finally {
+      await Promise.all([
+        closeServer(creationServer.server),
+        closeServer(redirectServer.server),
+      ]);
+    }
+  });
+
   test("creates and persists a short URL", async () => {
     const originalUrl = "https://example.com/page";
     const response = await postUrl({ url: originalUrl });
@@ -294,6 +395,436 @@ describe("POST /urls", () => {
   });
 });
 
+describe("Redirect Server", () => {
+  test("both servers stay ready with degraded health when Redis is down", async () => {
+    const degradedHealth = async () => ({
+      status: "degraded" as const,
+      postgres: "up" as const,
+      redis: "down" as const,
+    });
+    const creationServer = await listen(
+      createApp(undefined, undefined, degradedHealth),
+    );
+    const redirectServer = await listen(
+      createRedirectApp(undefined, undefined, degradedHealth),
+    );
+
+    try {
+      const [creationResponse, redirectResponse] = await Promise.all([
+        fetch(`${creationServer.baseUrl}/health`),
+        fetch(`${redirectServer.baseUrl}/health`),
+      ]);
+
+      expect(creationResponse.status).toBe(200);
+      expect(redirectResponse.status).toBe(200);
+      expect(await creationResponse.json()).toEqual({
+        status: "degraded",
+        postgres: "up",
+        redis: "down",
+      });
+      expect(await redirectResponse.json()).toEqual({
+        status: "degraded",
+        postgres: "up",
+        redis: "down",
+      });
+    } finally {
+      await Promise.all([
+        closeServer(creationServer.server),
+        closeServer(redirectServer.server),
+      ]);
+    }
+  });
+
+  test("both servers fail readiness when PostgreSQL is down", async () => {
+    const failedHealth = async () => ({
+      status: "error" as const,
+      postgres: "down" as const,
+      redis: "up" as const,
+    });
+    const creationServer = await listen(
+      createApp(undefined, undefined, failedHealth),
+    );
+    const redirectServer = await listen(
+      createRedirectApp(undefined, undefined, failedHealth),
+    );
+
+    try {
+      const [creationResponse, redirectResponse] = await Promise.all([
+        fetch(`${creationServer.baseUrl}/health`),
+        fetch(`${redirectServer.baseUrl}/health`),
+      ]);
+
+      expect(creationResponse.status).toBe(503);
+      expect(redirectResponse.status).toBe(503);
+      expect(await creationResponse.json()).toEqual({
+        status: "error",
+        postgres: "down",
+        redis: "up",
+      });
+      expect(await redirectResponse.json()).toEqual({
+        status: "error",
+        postgres: "down",
+        redis: "up",
+      });
+    } finally {
+      await Promise.all([
+        closeServer(creationServer.server),
+        closeServer(redirectServer.server),
+      ]);
+    }
+  });
+
+  test("falls back to PostgreSQL when Redis is unavailable", async () => {
+    const created = await createUrl("https://example.com/redis-outage");
+    const unavailableCache = {
+      lookup: async () => {
+        throw new Error("Redis lookup failed");
+      },
+      storeOriginalUrl: async (): Promise<void> => {
+        throw new Error("Redis write failed");
+      },
+      storeMissing: async (): Promise<void> => {
+        throw new Error("Redis write failed");
+      },
+    };
+    const redirectServer = await listen(
+      createRedirectApp(undefined, unavailableCache),
+    );
+
+    try {
+      const response = await fetch(
+        `${redirectServer.baseUrl}/${created.body.code}`,
+        { redirect: "manual" },
+      );
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(created.body.originalUrl);
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("returns 404 for an unknown code when Redis is unavailable", async () => {
+    const unavailableCache = {
+      lookup: async () => {
+        throw new Error("Redis lookup failed");
+      },
+      storeOriginalUrl: async (): Promise<void> => {
+        throw new Error("Redis write failed");
+      },
+      storeMissing: async (): Promise<void> => {
+        throw new Error("Redis write failed");
+      },
+    };
+    const redirectServer = await listen(
+      createRedirectApp(undefined, unavailableCache),
+    );
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/Unknown`);
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "SHORT_URL_NOT_FOUND",
+          message: "Short URL not found.",
+        },
+      });
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("a Cache Miss redirects and caches the Original URL for 24 hours", async () => {
+    const created = await createUrl("https://example.com/cache-miss");
+    await redis.del(`short-url:${created.body.code}`);
+    const redirectServer = await listen(createRedirectApp());
+
+    try {
+      const response = await fetch(
+        `${redirectServer.baseUrl}/${created.body.code}`,
+        { redirect: "manual" },
+      );
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(created.body.originalUrl);
+      expect(await redis.get(`short-url:${created.body.code}`)).toBe(
+        created.body.originalUrl,
+      );
+
+      const ttl = await redis.ttl(`short-url:${created.body.code}`);
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(24 * 60 * 60);
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("a Cache Hit redirects without a PostgreSQL lookup", async () => {
+    const code = "CACHED1";
+    const originalUrl = "https://example.com/cache-hit";
+    await redis.set(`short-url:${code}`, originalUrl);
+    const unavailableStore = {
+      findOriginalUrl: async (): Promise<string | undefined> => {
+        throw new Error("PostgreSQL lookup should not run on a Cache Hit");
+      },
+    };
+    const redirectServer = await listen(createRedirectApp(unavailableStore));
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/${code}`, {
+        redirect: "manual",
+      });
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(originalUrl);
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("reports PostgreSQL and Redis dependency health", async () => {
+    const redirectServer = await listen(createRedirectApp());
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/health`);
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        status: "ok",
+        postgres: "up",
+        redis: "up",
+      });
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("redirects a stored Short Code to its Original URL", async () => {
+    const created = await createUrl(
+      "https://EXAMPLE.com:443/redirect-target",
+    );
+    const redirectServer = await listen(createRedirectApp());
+
+    try {
+      const response = await fetch(
+        `${redirectServer.baseUrl}/${created.body.code}`,
+        { redirect: "manual" },
+      );
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(
+        "https://example.com/redirect-target",
+      );
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("returns structured 404 for an unknown Short Code", async () => {
+    const redirectServer = await listen(createRedirectApp());
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/Unknown`, {
+        redirect: "manual",
+      });
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "SHORT_URL_NOT_FOUND",
+          message: "Short URL not found.",
+        },
+      });
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("caches an unknown Short Code as missing for 60 seconds", async () => {
+    const code = "MISSING";
+    const redirectServer = await listen(createRedirectApp());
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/${code}`);
+
+      expect(response.status).toBe(404);
+      expect(await redis.get(`short-url:${code}`)).toBe(
+        "__SHORT_URL_NOT_FOUND__",
+      );
+
+      const ttl = await redis.ttl(`short-url:${code}`);
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(60);
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("a negative Cache Hit returns 404 without a PostgreSQL lookup", async () => {
+    const code = "MISSING";
+    await redis.set(`short-url:${code}`, "__SHORT_URL_NOT_FOUND__", { EX: 60 });
+    const unavailableStore = {
+      findOriginalUrl: async (): Promise<string | undefined> => {
+        throw new Error("PostgreSQL lookup should not run on a negative Cache Hit");
+      },
+    };
+    const redirectServer = await listen(createRedirectApp(unavailableStore));
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/${code}`, {
+        redirect: "manual",
+      });
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "SHORT_URL_NOT_FOUND",
+          message: "Short URL not found.",
+        },
+      });
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("returns 503 when an uncached lookup cannot reach PostgreSQL", async () => {
+    const unavailableStore = {
+      findOriginalUrl: async (): Promise<string | undefined> => {
+        throw new Error("PostgreSQL lookup failed");
+      },
+    };
+    const emptyCache = {
+      lookup: async () => ({ kind: "absent" as const }),
+      storeOriginalUrl: async (): Promise<void> => undefined,
+      storeMissing: async (): Promise<void> => undefined,
+    };
+    const redirectServer = await listen(
+      createRedirectApp(unavailableStore, emptyCache),
+    );
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/Unknown`);
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "REDIRECT_UNAVAILABLE",
+          message: "Unable to resolve the short URL right now.",
+        },
+      });
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("rejects a wrong-length Short Code without dependency lookup", async () => {
+    const unavailableStore = {
+      findOriginalUrl: async (): Promise<string | undefined> => {
+        throw new Error("PostgreSQL lookup should not run");
+      },
+    };
+    const unavailableCache = {
+      lookup: async () => {
+        throw new Error("Redis lookup should not run");
+      },
+      storeOriginalUrl: async (): Promise<void> => {
+        throw new Error("Redis write should not run");
+      },
+      storeMissing: async (): Promise<void> => {
+        throw new Error("Redis write should not run");
+      },
+    };
+    const redirectServer = await listen(
+      createRedirectApp(unavailableStore, unavailableCache),
+    );
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/Short1`);
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "SHORT_URL_NOT_FOUND",
+          message: "Short URL not found.",
+        },
+      });
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("rejects a non-Base62 Short Code without dependency lookup", async () => {
+    const unavailableStore = {
+      findOriginalUrl: async (): Promise<string | undefined> => {
+        throw new Error("PostgreSQL lookup should not run");
+      },
+    };
+    const unavailableCache = {
+      lookup: async () => {
+        throw new Error("Redis lookup should not run");
+      },
+      storeOriginalUrl: async (): Promise<void> => {
+        throw new Error("Redis write should not run");
+      },
+      storeMissing: async (): Promise<void> => {
+        throw new Error("Redis write should not run");
+      },
+    };
+    const redirectServer = await listen(
+      createRedirectApp(unavailableStore, unavailableCache),
+    );
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/BAD-CDE`);
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "SHORT_URL_NOT_FOUND",
+          message: "Short URL not found.",
+        },
+      });
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("returns redirect metadata without a body for HEAD", async () => {
+    const originalUrl = "https://example.com/head-target";
+    const created = await createUrl(originalUrl);
+    const redirectServer = await listen(createRedirectApp());
+
+    try {
+      const response = await fetch(
+        `${redirectServer.baseUrl}/${created.body.code}`,
+        { method: "HEAD", redirect: "manual" },
+      );
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe(originalUrl);
+      expect(await response.text()).toBe("");
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+
+  test("returns 405 and allowed methods for an unsupported method", async () => {
+    const redirectServer = await listen(createRedirectApp());
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/Unknown`, {
+        method: "POST",
+      });
+
+      expect(response.status).toBe(405);
+      expect(response.headers.get("allow")).toBe("GET, HEAD");
+    } finally {
+      await closeServer(redirectServer.server);
+    }
+  });
+});
+
 test("an already-applied migration is safely skipped", async () => {
   await runMigrations(postgres);
   await runMigrations(postgres);
@@ -309,4 +840,32 @@ test("an already-applied migration is safely skipped", async () => {
     { version: "001_create_urls.sql", count: 1 },
     { version: "002_unique_normalized_url.sql", count: 1 },
   ]);
+});
+
+test("dependency lifecycle tolerates Redis never connecting", async () => {
+  let postgresEnded = false;
+  let redisQuitCalled = false;
+  const lifecycle = createDependencyLifecycle(
+    {
+      query: async () => ({ rows: [] }),
+      end: async () => {
+        postgresEnded = true;
+      },
+    },
+    {
+      isOpen: false,
+      connect: async () => {
+        throw new Error("Redis unavailable");
+      },
+      quit: async () => {
+        redisQuitCalled = true;
+      },
+    },
+    () => undefined,
+  );
+
+  await expect(lifecycle.start()).resolves.toBeUndefined();
+  await expect(lifecycle.stop()).resolves.toBeUndefined();
+  expect(postgresEnded).toBe(true);
+  expect(redisQuitCalled).toBe(false);
 });
