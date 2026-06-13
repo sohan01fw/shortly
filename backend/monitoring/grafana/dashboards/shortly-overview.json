@@ -1,0 +1,98 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "title": "Requests per second",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum by (service) (rate(shortly_http_requests_total[5m]))", "legendFormat": "{{service}}" }]
+    },
+    {
+      "title": "p95 request latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, service) (rate(shortly_http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{service}}" }]
+    },
+    {
+      "title": "HTTP responses",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [{ "expr": "sum by (service, status) (rate(shortly_http_requests_total[5m]))", "legendFormat": "{{service}} {{status}}" }]
+    },
+    {
+      "title": "URL creation outcomes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [{ "expr": "sum by (outcome) (rate(shortly_url_creation_total[5m]))", "legendFormat": "{{outcome}}" }]
+    },
+    {
+      "title": "Redirect outcomes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [{ "expr": "sum by (outcome) (rate(shortly_redirect_total[5m]))", "legendFormat": "{{outcome}}" }]
+    },
+    {
+      "title": "Redirect cache outcomes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [{ "expr": "sum by (outcome) (rate(shortly_redirect_cache_total[5m]))", "legendFormat": "{{outcome}}" }]
+    },
+    {
+      "title": "Dependency failures",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [{ "expr": "sum by (service, dependency, operation) (increase(shortly_dependency_failures_total[15m]))", "legendFormat": "{{service}} {{dependency}} {{operation}}" }]
+    },
+    {
+      "title": "PostgreSQL fallbacks",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [{ "expr": "rate(shortly_postgres_fallback_total[5m])", "legendFormat": "fallbacks/s" }]
+    },
+    {
+      "title": "PostgreSQL connections",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
+      "targets": [{ "expr": "pg_stat_database_numbackends{datname=\"shortly\"}", "legendFormat": "connections" }]
+    },
+    {
+      "title": "Redis memory",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [{ "expr": "redis_memory_used_bytes", "legendFormat": "used" }]
+    },
+    {
+      "title": "Nginx connections",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
+      "targets": [{ "expr": "nginx_connections_active", "legendFormat": "active" }]
+    },
+    {
+      "title": "Container memory",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [{ "expr": "sum by (name) (container_memory_working_set_bytes{name!=\"\"})", "legendFormat": "{{name}}" }]
+    },
+    {
+      "title": "Container CPU",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [{ "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name!=\"\"}[5m]))", "legendFormat": "{{name}}" }]
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["shortly", "operations"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "Shortly Operations Overview",
+  "uid": "shortly-overview",
+  "version": 1
+}

@@ -15,6 +15,7 @@ const {
   stopDependencies,
 } = await import("../src/dependencies");
 const { runMigrations } = await import("../src/database/migrations");
+const { createAppMetrics } = await import("../src/metrics");
 
 let server: Server | undefined;
 let baseUrl: string;
@@ -391,6 +392,81 @@ describe("POST /urls", () => {
         closeServer(existingApp.server),
         closeServer(exhaustedApp.server),
       ]);
+    }
+  });
+});
+
+describe("Prometheus metrics", () => {
+  test("exposes creation request and outcome metrics without URL labels", async () => {
+    const metrics = createAppMetrics("creation");
+    const creationServer = await listen(
+      createApp(
+        () => "METRIC1",
+        { storeOriginalUrl: async () => undefined },
+        async () => ({
+          status: "ok" as const,
+          postgres: "up" as const,
+          redis: "up" as const,
+        }),
+        metrics,
+      ),
+    );
+    const originalUrl = "https://example.com/private-path";
+
+    try {
+      const response = await postUrlTo(creationServer.baseUrl, { url: originalUrl });
+      expect(response.status).toBe(201);
+
+      const metricsResponse = await fetch(`${creationServer.baseUrl}/metrics`);
+      const body = await metricsResponse.text();
+
+      expect(metricsResponse.headers.get("content-type")).toContain(
+        "text/plain",
+      );
+      expect(body).toContain("shortly_http_requests_total");
+      expect(body).toContain('route="/urls"');
+      expect(body).toContain('shortly_url_creation_total{outcome="created",service="creation"} 1');
+      expect(body).not.toContain(originalUrl);
+      expect(body).not.toContain("METRIC1");
+    } finally {
+      await closeServer(creationServer.server);
+    }
+  });
+
+  test("records redirect cache misses and PostgreSQL fallback", async () => {
+    const metrics = createAppMetrics("redirect");
+    const redirectServer = await listen(
+      createRedirectApp(
+        { findOriginalUrl: async () => "https://example.com/target" },
+        {
+          lookup: async () => ({ kind: "absent" as const }),
+          storeOriginalUrl: async () => undefined,
+          storeMissing: async () => undefined,
+        },
+        async () => ({
+          status: "ok" as const,
+          postgres: "up" as const,
+          redis: "up" as const,
+        }),
+        metrics,
+      ),
+    );
+
+    try {
+      const response = await fetch(`${redirectServer.baseUrl}/METRIC2`, {
+        redirect: "manual",
+      });
+      expect(response.status).toBe(302);
+
+      const body = await fetch(`${redirectServer.baseUrl}/metrics`).then(
+        (result) => result.text(),
+      );
+      expect(body).toContain('shortly_redirect_cache_total{outcome="miss",service="redirect"} 1');
+      expect(body).toContain("shortly_postgres_fallback_total{service=\"redirect\"} 1");
+      expect(body).toContain('shortly_redirect_total{outcome="redirected",service="redirect"} 1');
+      expect(body).not.toContain("METRIC2");
+    } finally {
+      await closeServer(redirectServer.server);
     }
   });
 });

@@ -19,6 +19,7 @@ import {
   redisRedirectCache,
   type PositiveRedirectCache,
 } from "./urls/redirect-cache";
+import { creationMetrics, type AppMetrics } from "./metrics";
 
 const shortCodeGenerationFailedError = {
   error: {
@@ -38,10 +39,16 @@ export const createApp = (
   codeSource: ShortCodeSource = createShortCode,
   redirectCache: PositiveRedirectCache = redisRedirectCache,
   healthCheck: DependencyHealthCheck = checkDependencies,
+  metrics: AppMetrics = creationMetrics,
 ): express.Express => {
   const app = express();
 
+  app.use(metrics.requestMiddleware);
   app.use(express.json());
+
+  app.get("/metrics", async (_request, response) => {
+    response.type(metrics.contentType).send(await metrics.registry.metrics());
+  });
 
   app.get("/", (_request, response) => {
     response.status(200).send("Hello World");
@@ -49,6 +56,12 @@ export const createApp = (
 
   app.get("/health", async (_request, response) => {
     const health = await healthCheck();
+    if (health.postgres === "down") {
+      metrics.recordDependencyFailure("postgres", "health_check");
+    }
+    if (health.redis === "down") {
+      metrics.recordDependencyFailure("redis", "health_check");
+    }
     response.status(health.status === "error" ? 503 : 200).json(health);
   });
 
@@ -56,6 +69,7 @@ export const createApp = (
     const originalUrl = request.body.url;
 
     if (!isValidOriginalUrl(originalUrl)) {
+      metrics.recordUrlCreation("invalid");
       response.status(400).json(invalidUrlError);
       return;
     }
@@ -73,11 +87,15 @@ export const createApp = (
           result.shortUrl.originalUrl,
         );
       } catch (error) {
+        metrics.recordCache("write_error");
+        metrics.recordDependencyFailure("redis", "cache_warm");
         console.error("Unable to warm redirect cache", error);
       }
 
+      metrics.recordUrlCreation(result.created ? "created" : "reused");
       response.status(result.created ? 201 : 200).json(result.shortUrl);
     } catch (error) {
+      metrics.recordUrlCreation("failed");
       if (error instanceof ShortCodeGenerationError) {
         response.status(500).json(shortCodeGenerationFailedError);
         return;

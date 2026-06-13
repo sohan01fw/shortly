@@ -1,0 +1,36 @@
+groups:
+  - name: shortly
+    rules:
+      - alert: ShortlyTargetDown
+        expr: up{job=~"shortly-.*|postgres|redis|nginx|cadvisor"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is unavailable"
+          description: "Prometheus has been unable to scrape {{ $labels.instance }} for two minutes."
+
+      - alert: ShortlyHighServerErrorRate
+        expr: |
+          sum(rate(shortly_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(shortly_http_requests_total[5m])), 0.001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Shortly server error rate is above 5%"
+          description: "More than 5% of Shortly requests have returned 5xx responses for five minutes."
+
+      - alert: ShortlyHighRequestLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, service) (rate(shortly_http_request_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} p95 latency is above one second"
+          description: "The 95th percentile request latency has exceeded one second for five minutes."
