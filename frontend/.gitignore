@@ -1,0 +1,7 @@
+node_modules
+dist
+.bun-cache
+.tmp
+.env
+.env.local
+*.log
