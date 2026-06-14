@@ -126,6 +126,12 @@ them for 60 seconds, and ramp down over 15 seconds:
 bun run load:create
 ```
 
+For a 500-VU run using the same timing profile:
+
+```sh
+VUS=500 bun run load:create
+```
+
 The test sends only `POST /urls` requests. Each iteration uses a unique valid
 URL, so it exercises new Short URL creation instead of the duplicate reuse or
 redirect paths. It fails when request failures reach 1%, checks fall to 99%,

@@ -12,6 +12,10 @@ x-backend-health: &backend-health
 services:
   gateway:
     image: nginx:1.27-alpine
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
     ports:
       - "5000:5000"
     volumes:
