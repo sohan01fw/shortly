@@ -37,6 +37,7 @@ services:
     command: ["bun", "run", "start:creation"]
     environment:
       <<: *backend-environment
+      DATABASE_POOL_MAX: 30
       PORT: 5001
     expose:
       - "5001"
@@ -54,6 +55,7 @@ services:
     command: ["bun", "run", "start:redirect"]
     environment:
       <<: *backend-environment
+      DATABASE_POOL_MAX: 10
       REDIRECT_PORT: 5002
     expose:
       - "5002"

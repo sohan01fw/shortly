@@ -12,6 +12,7 @@ export const config = {
   creationPort: Number(process.env.PORT ?? 5000),
   redirectPort: Number(process.env.REDIRECT_PORT ?? 5001),
   databaseUrl: requiredEnv("DATABASE_URL"),
+  databasePoolMax: Number(process.env.DATABASE_POOL_MAX ?? 10),
   redisUrl: requiredEnv("REDIS_URL"),
   shortUrlBaseUrl: process.env.SHORT_URL_BASE_URL ?? "http://localhost:5000",
 };

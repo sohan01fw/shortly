@@ -29,7 +29,10 @@ type DependencyLifecycle = {
   stop(): Promise<void>;
 };
 
-export const postgres = new Pool({ connectionString: config.databaseUrl });
+export const postgres = new Pool({
+  connectionString: config.databaseUrl,
+  max: config.databasePoolMax,
+});
 export const redis = createClient({
   url: config.redisUrl,
   socket: { reconnectStrategy: false },

@@ -367,7 +367,7 @@ describe("POST /urls", () => {
         url: "https://example.com/existing",
       });
       const before = await postgres.query(
-        "SELECT short_code, original_url, normalized_url FROM urls ORDER BY id",
+        "SELECT short_code, original_url, normalized_url FROM urls ORDER BY short_code",
       );
 
       const response = await postUrlTo(exhaustedApp.baseUrl, {
@@ -384,7 +384,7 @@ describe("POST /urls", () => {
       expect(attempts).toBe(5);
 
       const after = await postgres.query(
-        "SELECT short_code, original_url, normalized_url FROM urls ORDER BY id",
+        "SELECT short_code, original_url, normalized_url FROM urls ORDER BY short_code",
       );
       expect(after.rows).toEqual(before.rows);
     } finally {
@@ -915,6 +915,7 @@ test("an already-applied migration is safely skipped", async () => {
   expect(applied.rows).toEqual([
     { version: "001_create_urls.sql", count: 1 },
     { version: "002_unique_normalized_url.sql", count: 1 },
+    { version: "003_remove_unused_url_id.sql", count: 1 },
   ]);
 });
 

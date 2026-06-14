@@ -35,11 +35,6 @@ export const createShortUrl = async (
   codeSource: ShortCodeSource = createShortCode,
 ): Promise<CreateShortUrlResult> => {
   const normalizedUrl = normalizeOriginalUrl(originalUrl);
-  const existing = await findByNormalizedUrl(normalizedUrl);
-
-  if (existing) {
-    return buildResult(existing, shortUrlBaseUrl, false);
-  }
 
   for (let attempt = 0; attempt < maximumCodeAttempts; attempt += 1) {
     const code = codeSource();
