@@ -26,6 +26,6 @@ scrape_configs:
     static_configs:
       - targets: ["nginx-exporter:9113"]
 
-  - job_name: cadvisor
+  - job_name: docker-stats
     static_configs:
-      - targets: ["cadvisor:8080"]
+      - targets: ["docker-stats-exporter:9101"]

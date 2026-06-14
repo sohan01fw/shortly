@@ -56,7 +56,7 @@ should report `UP`. Then generate traffic through `http://localhost:5000` and
 allow up to 15 seconds for the next scrape. Check container logs with:
 
 ```sh
-docker compose logs prometheus grafana postgres-exporter redis-exporter nginx-exporter cadvisor
+docker compose logs prometheus grafana postgres-exporter redis-exporter nginx-exporter docker-stats-exporter
 ```
 
 `SHORT_URL_BASE_URL` controls the public base used in generated Short URLs. For
@@ -100,6 +100,61 @@ Stop and remove the complete development stack with:
 ```sh
 bun run dev:down
 ```
+
+## Load test Short URL creation
+
+No host k6 installation is required. Docker Compose downloads and runs the
+official `grafana/k6` image. From the `backend` directory, start the application
+and monitoring stack:
+
+```sh
+bun run docker:start
+```
+
+Open Grafana at `http://localhost:8080`, log in with `admin` / `shortly`, and
+open the **Shortly / Shortly Operations Overview** dashboard. Then run a short
+smoke test in another terminal:
+
+```sh
+VUS=1 RAMP_UP=1s HOLD=15s RAMP_DOWN=1s bun run load:create
+```
+
+Run the default profile to ramp up to 100 virtual users over 30 seconds, hold
+them for 60 seconds, and ramp down over 15 seconds:
+
+```sh
+bun run load:create
+```
+
+The test sends only `POST /urls` requests. Each iteration uses a unique valid
+URL, so it exercises new Short URL creation instead of the duplicate reuse or
+redirect paths. It fails when request failures reach 1%, checks fall to 99%,
+or p95 request latency reaches one second.
+
+The profile can be changed without editing the script:
+
+```sh
+VUS=250 HOLD=3m bun run load:create
+BASE_URL=https://staging.example.com EXPECTED_SHORT_URL_BASE=https://sho.rt RUN_ID=staging-001 bun run load:create
+```
+
+Supported variables are `BASE_URL`, `VUS`, `RAMP_UP`, `HOLD`, `RAMP_DOWN`,
+`SLEEP_SECONDS`, `RUN_ID`, and `EXPECTED_SHORT_URL_BASE`. `BASE_URL` is where k6
+sends requests; `EXPECTED_SHORT_URL_BASE` is the public base expected in the
+response. Load-test rows remain in PostgreSQL after the run. In Grafana, watch
+creation request rate, p95 latency, status codes, PostgreSQL and Redis activity,
+and container CPU and memory while the command runs.
+
+After the load test finishes, remove only its generated PostgreSQL rows and
+corresponding Redis cache entries:
+
+```sh
+bun run load:clean
+```
+
+Cleanup targets URLs under the reserved `https://load-test.example.com/`
+prefix. It does not truncate tables, flush Redis, or remove normal application
+data. Do not run cleanup while a load test is still creating URLs.
 
 ## Verify
 

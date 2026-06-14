@@ -76,14 +76,14 @@
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
       "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
-      "targets": [{ "expr": "sum by (name) (container_memory_working_set_bytes{name!=\"\"})", "legendFormat": "{{name}}" }]
+      "targets": [{ "expr": "shortly_container_memory_working_set_bytes", "legendFormat": "{{service}}" }]
     },
     {
       "title": "Container CPU",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
       "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
-      "targets": [{ "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name!=\"\"}[5m]))", "legendFormat": "{{name}}" }]
+      "targets": [{ "expr": "rate(shortly_container_cpu_usage_seconds_total[1m])", "legendFormat": "{{service}}" }]
     }
   ],
   "refresh": "15s",

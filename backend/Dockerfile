@@ -8,6 +8,6 @@ RUN bun install --frozen-lockfile --production
 COPY tsconfig.json ./
 COPY src ./src
 
-EXPOSE 5001 5002
+EXPOSE 5001 5002 9101
 
 CMD ["bun", "run", "start"]

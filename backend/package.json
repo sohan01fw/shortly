@@ -8,8 +8,11 @@
     "dev:down": "docker compose -f compose.yaml -f compose.dev.yaml down --remove-orphans",
     "start": "bun run start:creation",
     "start:creation": "bun src/index.ts",
+    "start:docker-stats": "bun src/docker-stats-exporter.ts",
     "start:redirect": "bun src/redirect-index.ts",
     "docker:start": "docker compose up --build --detach --wait",
+    "load:clean": "docker compose --profile maintenance run --rm load-cleanup",
+    "load:create": "docker compose --profile loadtest run --rm k6",
     "test:gateway": "GATEWAY_BASE_URL=http://localhost:5000 bun test test/gateway.test.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
