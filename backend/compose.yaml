@@ -183,6 +183,8 @@ services:
       HOLD: ${HOLD:-60s}
       RAMP_DOWN: ${RAMP_DOWN:-15s}
       SLEEP_SECONDS: ${SLEEP_SECONDS:-1}
+      SEED_URL_COUNT: ${SEED_URL_COUNT:-1000}
+      SETUP_TIMEOUT: ${SETUP_TIMEOUT:-5m}
       RUN_ID: ${RUN_ID:-}
     volumes:
       - ./load:/scripts:ro

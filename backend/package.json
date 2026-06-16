@@ -13,6 +13,7 @@
     "docker:start": "docker compose up --build --detach --wait",
     "load:clean": "docker compose --profile maintenance run --rm load-cleanup",
     "load:create": "docker compose --profile loadtest run --rm k6",
+    "load:redirect": "docker compose --profile loadtest run --rm k6 run /scripts/redirect-short-urls.js",
     "test:gateway": "GATEWAY_BASE_URL=http://localhost:5000 bun test test/gateway.test.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
